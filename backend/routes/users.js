@@ -1,7 +1,7 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const { body, validationResult } = require('express-validator');
-const { pool } = require('../config/database');
+const { query } = require('../config/database');
 const { authenticateToken, requireAdmin } = require('../middleware/auth');
 
 const router = express.Router();
@@ -12,14 +12,14 @@ const userValidation = [
     .trim()
     .isLength({ min: 2, max: 100 })
     .withMessage('Name must be between 2 and 100 characters'),
+  body('username')
+    .trim()
+    .isLength({ min: 3, max: 50 })
+    .matches(/^[a-zA-Z0-9_]+$/)
+    .withMessage('Username must contain only letters, numbers, and underscores'),
   body('password')
-    .optional()
     .isLength({ min: 6 })
     .withMessage('Password must be at least 6 characters long'),
-  body('status')
-    .optional()
-    .isIn(['active', 'inactive', 'suspended'])
-    .withMessage('Status must be active, inactive, or suspended'),
   body('role_id')
     .optional()
     .isInt({ min: 1 })
@@ -29,59 +29,54 @@ const userValidation = [
 // @route   GET /api/users
 // @desc    Get all users with optional filtering and pagination
 // @access  Private (Admin only)
-router.get('/', [authenticateToken, requireAdmin], async (req, res) => {
+router.get('/', authenticateToken, requireAdmin, async (req, res) => {
+  const { 
+    page = 1, 
+    limit = 10, 
+    search = '', 
+    role_id = '',
+    status = '',
+    sortBy = 'created_at',
+    sortOrder = 'DESC'
+  } = req.query;
+
+  const safePage = Math.max(parseInt(page) || 1, 1);
+  const safeLimit = Math.min(Math.max(parseInt(limit) || 10, 1), 1000);
+  const offset = (safePage - 1) * safeLimit;
+  const validSortFields = ['id', 'name', 'status', 'role_id', 'created_at', 'updated_at'];
+  const validSortOrders = ['ASC', 'DESC'];
+
+  const sortField = validSortFields.includes(sortBy) ? sortBy : 'created_at';
+  const sortDirection = validSortOrders.includes(String(sortOrder).toUpperCase()) ? String(sortOrder).toUpperCase() : 'DESC';
+
+  // Build WHERE clause
+  let whereClause = 'WHERE 1=1';
+  let params = [];
+
+  if (search) {
+    whereClause += ' AND u.name LIKE ?';
+    const searchTerm = `%${search}%`;
+    params.push(searchTerm);
+  }
+
+  if (role_id) {
+    whereClause += ' AND u.role_id = ?';
+    params.push(parseInt(role_id));
+  }
+
+  if (status) {
+    whereClause += ' AND u.status = ?';
+    params.push(status);
+  }
+
   try {
-    const { 
-      page = 1, 
-      limit = 10, 
-      search = '', 
-      status = '',
-      role_id = '',
-      sortBy = 'created_at',
-      sortOrder = 'DESC'
-    } = req.query;
-
-    const offset = (page - 1) * limit;
-    const validSortFields = ['id', 'name', 'status', 'role_id', 'created_at', 'updated_at'];
-    const validSortOrders = ['ASC', 'DESC'];
-
-    // Validate sort parameters
-    if (!validSortFields.includes(sortBy)) {
-      sortBy = 'created_at';
-    }
-    if (!validSortOrders.includes(sortOrder.toUpperCase())) {
-      sortOrder = 'DESC';
-    }
-
-    // Build WHERE clause
-    let whereClause = 'WHERE 1=1';
-    let params = [];
-
-    if (search) {
-      whereClause += ' AND u.name LIKE ?';
-      const searchTerm = `%${search}%`;
-      params.push(searchTerm);
-    }
-
-    if (status) {
-      whereClause += ' AND u.status = ?';
-      params.push(status);
-    }
-
-    if (role_id) {
-      whereClause += ' AND u.role_id = ?';
-      params.push(parseInt(role_id));
-    }
-
-    // Get total count
-    const [countResult] = await pool.execute(
+    const countResult = await query(
       `SELECT COUNT(*) as total FROM users u ${whereClause}`,
       params
     );
     const total = countResult[0].total;
 
-    // Get users with role information
-    const [users] = await pool.execute(
+    const users = await query(
       `SELECT 
         u.id,
         u.name,
@@ -89,55 +84,44 @@ router.get('/', [authenticateToken, requireAdmin], async (req, res) => {
         u.role_id,
         u.created_at,
         u.updated_at,
-        r.name as role_name,
-        CASE WHEN s.id IS NOT NULL THEN 1 ELSE 0 END as has_staff_profile
+        r.name as role_name
        FROM users u
        LEFT JOIN roles r ON u.role_id = r.id
-       LEFT JOIN staff s ON u.id = s.user_id
        ${whereClause}
-       ORDER BY u.${sortBy} ${sortOrder}
+       ORDER BY u.${sortField} ${sortDirection}
        LIMIT ? OFFSET ?`,
-      [...params, parseInt(limit), offset]
+      [...params, safeLimit, offset]
     );
 
-    // Get unique roles for filter options
-    const [roles] = await pool.execute(
-      'SELECT id, name FROM roles ORDER BY name'
-    );
+    const [roles, statuses] = await Promise.all([
+      query('SELECT id, name FROM roles ORDER BY name'),
+      query('SELECT DISTINCT status FROM users ORDER BY status')
+    ]);
 
-    // Get unique statuses for filter options
-    const [statuses] = await pool.execute(
-      'SELECT DISTINCT status FROM users ORDER BY status'
-    );
-
-    const totalPages = Math.ceil(total / limit);
-    const hasNextPage = page < totalPages;
-    const hasPrevPage = page > 1;
-
-    res.json({
+    return res.json({
       status: 'success',
+      message: 'Fetched users successfully',
       data: {
         users,
         pagination: {
-          currentPage: parseInt(page),
-          totalPages,
+          currentPage: safePage,
+          totalPages: Math.ceil(total / safeLimit),
           totalItems: total,
-          itemsPerPage: parseInt(limit),
-          hasNextPage,
-          hasPrevPage
+          itemsPerPage: safeLimit,
+          hasNextPage: safePage < Math.ceil(total / safeLimit),
+          hasPrevPage: safePage > 1
         },
         filters: {
-          availableRoles: roles,
-          availableStatuses: statuses.map(s => s.status)
+          roles: roles.map(r => ({ id: r.id, name: r.name })),
+          statuses: statuses.map(s => s.status)
         }
       }
     });
-
   } catch (error) {
-    console.error('Get users error:', error);
-    res.status(500).json({
+    console.error('Error fetching users:', error);
+    return res.status(500).json({
       status: 'error',
-      message: 'Internal server error'
+      message: 'Failed to fetch users'
     });
   }
 });
@@ -145,19 +129,17 @@ router.get('/', [authenticateToken, requireAdmin], async (req, res) => {
 // @route   GET /api/users/:id
 // @desc    Get user by ID with detailed information
 // @access  Private (Admin only)
-router.get('/:id', [authenticateToken, requireAdmin], async (req, res) => {
-  try {
-    const { id } = req.params;
+router.get('/:id', authenticateToken, requireAdmin, (req, res) => {
+  const { id } = req.params;
 
-    // Get user details
-    const [users] = await pool.execute(
-      `SELECT u.*, r.name as role_name
+  // Get user details
+  query(
+    `SELECT u.*, r.name as role_name
        FROM users u
        LEFT JOIN roles r ON u.role_id = r.id
        WHERE u.id = ?`,
-      [id]
-    );
-
+    [id]
+  ).then(users => {
     if (users.length === 0) {
       return res.status(404).json({
         status: 'error',
@@ -167,26 +149,17 @@ router.get('/:id', [authenticateToken, requireAdmin], async (req, res) => {
 
     const user = users[0];
 
-    // Get staff profile if exists
-    let staffProfile = null;
-    if (user.role_id) {
-      const [staff] = await pool.execute(
-        `SELECT s.*, c.name as center_name, c.field as center_field
-         FROM staff s
-         LEFT JOIN centers c ON s.center_id = c.id
-         WHERE s.user_id = ?`,
-        [id]
-      );
-      
-      if (staff.length > 0) {
-        staffProfile = staff[0];
-      }
-    }
-
-    // Get project memberships if staff profile exists
-    let projectMemberships = [];
-    if (staffProfile) {
-      const [memberships] = await pool.execute(
+    // Get staff information if exists
+    return query(
+      `SELECT s.id, s.gender, s.phone, s.address, s.description, s.center_id,
+              c.name as center_name, c.field as center_field
+       FROM staff s
+       LEFT JOIN centers c ON s.center_id = c.id
+       WHERE s.name = ?`,
+      [user.name]
+    ).then(staff => {
+      // Get project memberships if exists
+      return query(
         `SELECT 
           pm.id,
           pm.start_time,
@@ -198,58 +171,58 @@ router.get('/:id', [authenticateToken, requireAdmin], async (req, res) => {
           p.project_status
          FROM project_members pm
          LEFT JOIN projects p ON pm.project_id = p.id
-         WHERE pm.staff_id = ?`,
-        [staffProfile.id]
-      );
-      
-      projectMemberships = memberships;
-    }
-
-    res.json({
-      status: 'success',
-      data: {
-        user,
-        staffProfile,
-        projectMemberships,
-        stats: {
-          projectCount: projectMemberships.length,
-          activeProjects: projectMemberships.filter(p => !p.end_time).length
-        }
-      }
+         LEFT JOIN staff s ON pm.staff_id = s.id
+         WHERE s.name = ?`,
+        [user.name]
+      ).then(memberships => {
+        res.json({
+          status: 'success',
+          data: {
+            user: {
+              id: user.id,
+              name: user.name,
+              status: user.status,
+              role: user.role_name
+            },
+            staff: staff.length > 0 ? staff[0] : null,
+            projectMemberships: memberships,
+            stats: {
+              projectCount: memberships.length,
+              activeProjects: memberships.filter(m => !m.end_time).length
+            }
+          }
+        });
+      });
     });
-
-  } catch (error) {
+  }).catch(error => {
     console.error('Get user by ID error:', error);
     res.status(500).json({
       status: 'error',
       message: 'Internal server error'
     });
-  }
+  });
 });
 
 // @route   POST /api/users
 // @desc    Create a new user
 // @access  Private (Admin only)
-router.post('/', [authenticateToken, requireAdmin, ...userValidation], async (req, res) => {
-  try {
-    // Check validation errors
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({
-        status: 'error',
-        message: 'Validation failed',
-        errors: errors.array()
-      });
-    }
+router.post('/', [authenticateToken, requireAdmin, ...userValidation], (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({
+      status: 'error',
+      message: 'Validation failed',
+      errors: errors.array()
+    });
+  }
 
-    const { name, password, status, role_id } = req.body;
+  const { name, username, password, role_id } = req.body;
 
-    // Check if username already exists
-    const [existingUsers] = await pool.execute(
-      'SELECT id FROM users WHERE name = ?',
-      [name]
-    );
-
+  // Check if username already exists
+  query(
+    'SELECT id FROM users WHERE name = ?',
+    [username]
+  ).then(existingUsers => {
     if (existingUsers.length > 0) {
       return res.status(400).json({
         status: 'error',
@@ -257,84 +230,82 @@ router.post('/', [authenticateToken, requireAdmin, ...userValidation], async (re
       });
     }
 
-    // Check if role exists (if role_id is provided)
-    if (role_id) {
-      const [roles] = await pool.execute(
-        'SELECT id FROM roles WHERE id = ?',
-        [role_id]
-      );
-
+    // Check if role exists
+    return query(
+      'SELECT id FROM roles WHERE id = ?',
+      [role_id]
+    ).then(roles => {
       if (roles.length === 0) {
         return res.status(400).json({
           status: 'error',
           message: 'Role not found'
         });
       }
-    }
 
-    // Hash password if provided
-    let hashedPassword = null;
-    if (password) {
+      // Hash password
       const saltRounds = parseInt(process.env.BCRYPT_ROUNDS) || 12;
-      hashedPassword = await bcrypt.hash(password, saltRounds);
-    }
+      bcrypt.hash(password, saltRounds).then(hashedPassword => {
+        // Insert new user
+        return query(
+          'INSERT INTO users (name, password, role_id) VALUES (?, ?, ?)',
+          [username, hashedPassword, role_id]
+        ).then(result => {
+          const userId = result.insertId;
 
-    // Insert new user
-    const [result] = await pool.execute(
-      'INSERT INTO users (name, password, status, role_id) VALUES (?, ?, ?, ?)',
-      [name, hashedPassword, status || 'active', role_id || null]
-    );
+          // Get the created user
+          return query(
+            `SELECT u.id, u.name, u.status, u.role_id, r.name as role_name
+             FROM users u
+             LEFT JOIN roles r ON u.role_id = r.id
+             WHERE u.id = ?`,
+            [userId]
+          ).then(users => {
+            const user = users[0];
 
-    const userId = result.insertId;
-
-    // Get the created user
-    const [users] = await pool.execute(
-      `SELECT u.*, r.name as role_name
-       FROM users u
-       LEFT JOIN roles r ON u.role_id = r.id
-       WHERE u.id = ?`,
-      [userId]
-    );
-
-    res.status(201).json({
-      status: 'success',
-      message: 'User created successfully',
-      data: users[0]
+            res.status(201).json({
+              status: 'success',
+              message: 'User created successfully',
+              data: {
+                id: user.id,
+                name: user.name,
+                status: user.status,
+                role: user.role_name
+              }
+            });
+          });
+        });
+      });
     });
-
-  } catch (error) {
+  }).catch(error => {
     console.error('Create user error:', error);
     res.status(500).json({
       status: 'error',
       message: 'Internal server error'
     });
-  }
+  });
 });
 
 // @route   PUT /api/users/:id
 // @desc    Update user by ID
 // @access  Private (Admin only)
-router.put('/:id', [authenticateToken, requireAdmin, ...userValidation], async (req, res) => {
-  try {
-    // Check validation errors
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({
-        status: 'error',
-        message: 'Validation failed',
-        errors: errors.array()
-      });
-    }
+router.put('/:id', [authenticateToken, requireAdmin, ...userValidation], (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({
+      status: 'error',
+      message: 'Validation failed',
+      errors: errors.array()
+    });
+  }
 
-    const { id } = req.params;
-    const { name, password, status, role_id } = req.body;
+  const { id } = req.params;
+  const { name, username, password, role_id, status } = req.body;
 
-    // Check if user exists
-    const [existingUsers] = await pool.execute(
-      'SELECT id FROM users WHERE id = ?',
-      [id]
-    );
-
+  // Check if user exists
+  query(
+    'SELECT id FROM users WHERE id = ?',
+    [id]
+  ).then(existingUsers => {
     if (existingUsers.length === 0) {
       return res.status(404).json({
         status: 'error',
@@ -343,88 +314,121 @@ router.put('/:id', [authenticateToken, requireAdmin, ...userValidation], async (
     }
 
     // Check if new username conflicts with existing users
-    const [nameConflict] = await pool.execute(
+    return query(
       'SELECT id FROM users WHERE name = ? AND id != ?',
-      [name, id]
-    );
-
-    if (nameConflict.length > 0) {
-      return res.status(400).json({
-        status: 'error',
-        message: 'Username already exists'
-      });
-    }
-
-    // Check if role exists (if role_id is provided)
-    if (role_id) {
-      const [roles] = await pool.execute(
-        'SELECT id FROM roles WHERE id = ?',
-        [role_id]
-      );
-
-      if (roles.length === 0) {
+      [username, id]
+    ).then(nameConflict => {
+      if (nameConflict.length > 0) {
         return res.status(400).json({
           status: 'error',
-          message: 'Role not found'
+          message: 'Username already exists'
         });
       }
-    }
 
-    // Build update query
-    let updateQuery = 'UPDATE users SET name = ?, status = ?, role_id = ?';
-    let updateParams = [name, status || 'active', role_id || null];
+      // Check if role exists
+      return query(
+        'SELECT id FROM roles WHERE id = ?',
+        [role_id]
+      ).then(roles => {
+        if (roles.length === 0) {
+          return res.status(400).json({
+            status: 'error',
+            message: 'Role not found'
+          });
+        }
 
-    // Add password to update if provided
-    if (password) {
-      const saltRounds = parseInt(process.env.BCRYPT_ROUNDS) || 12;
-      const hashedPassword = await bcrypt.hash(password, saltRounds);
-      updateQuery += ', password = ?';
-      updateParams.push(hashedPassword);
-    }
+        // Build update query
+        let updateQuery = 'UPDATE users SET name = ?, role_id = ?';
+        let updateParams = [username, role_id];
 
-    updateQuery += ' WHERE id = ?';
-    updateParams.push(id);
+        if (status) {
+          updateQuery += ', status = ?';
+          updateParams.push(status);
+        }
 
-    // Update user
-    await pool.execute(updateQuery, updateParams);
+        if (password) {
+          // Hash new password
+          const saltRounds = parseInt(process.env.BCRYPT_ROUNDS) || 12;
+          bcrypt.hash(password, saltRounds).then(hashedPassword => {
+            updateQuery += ', password = ?';
+            updateParams.push(hashedPassword);
+            updateParams.push(id);
 
-    // Get the updated user
-    const [users] = await pool.execute(
-      `SELECT u.*, r.name as role_name
-       FROM users u
-       LEFT JOIN roles r ON u.role_id = r.id
-       WHERE u.id = ?`,
-      [id]
-    );
+            // Update user
+            return query(updateQuery, updateParams).then(() => {
+              // Get the updated user
+              return query(
+                `SELECT u.id, u.name, u.status, u.role_id, r.name as role_name
+                 FROM users u
+                 LEFT JOIN roles r ON u.role_id = r.id
+                 WHERE u.id = ?`,
+                [id]
+              ).then(users => {
+                const user = users[0];
 
-    res.json({
-      status: 'success',
-      message: 'User updated successfully',
-      data: users[0]
+                res.json({
+                  status: 'success',
+                  message: 'User updated successfully',
+                  data: {
+                    id: user.id,
+                    name: user.name,
+                    status: user.status,
+                    role: user.role_name
+                  }
+                });
+              });
+            });
+          });
+        } else {
+          updateParams.push(id);
+
+          // Update user without password
+          return query(updateQuery, updateParams).then(() => {
+            // Get the updated user
+            return query(
+              `SELECT u.id, u.name, u.status, u.role_id, r.name as role_name
+               FROM users u
+               LEFT JOIN roles r ON u.role_id = r.id
+               WHERE u.id = ?`,
+              [id]
+            ).then(users => {
+              const user = users[0];
+
+              res.json({
+                status: 'success',
+                message: 'User updated successfully',
+                data: {
+                  id: user.id,
+                  name: user.name,
+                  status: user.status,
+                  role: user.role_name
+                }
+              });
+            });
+          });
+        }
+      });
     });
-
-  } catch (error) {
+  }).catch(error => {
     console.error('Update user error:', error);
     res.status(500).json({
       status: 'error',
       message: 'Internal server error'
     });
-  }
+  });
 });
 
 // @route   DELETE /api/users/:id
 // @desc    Delete user by ID
 // @access  Private (Admin only)
-router.delete('/:id', [authenticateToken, requireAdmin], async (req, res) => {
-  try {
-    const { id } = req.params;
+router.delete('/:id', [authenticateToken, requireAdmin], (req, res) => {
+  const { id } = req.params;
 
-    // Check if user exists
-    const [existingUsers] = await pool.execute(
-      'SELECT id FROM users WHERE id = ?',
-      [id]
-    );
-
+  // Check if user exists
+  query(
+    'SELECT id FROM users WHERE id = ?',
+    [id]
+  ).then(existingUsers => {
     if (existingUsers.length === 0) {
       return res.status(404).json({
         status: 'error',
@@ -432,49 +436,46 @@ router.delete('/:id', [authenticateToken, requireAdmin], async (req, res) => {
       });
     }
 
-    // Check if user has associated staff profile
-    const [staffCount] = await pool.execute(
-      'SELECT COUNT(*) as count FROM staff WHERE user_id = ?',
+    // Check if user has associated staff
+    return query(
+      'SELECT COUNT(*) as count FROM staff WHERE name = (SELECT name FROM users WHERE id = ?)',
       [id]
-    );
+    ).then(staffCount => {
+      if (staffCount[0].count > 0) {
+        return res.status(400).json({
+          status: 'error',
+          message: 'Cannot delete user with associated staff'
+        });
+      }
 
-    if (staffCount[0].count > 0) {
-      return res.status(400).json({
-        status: 'error',
-        message: 'Cannot delete user with associated staff profile'
+      // Delete user
+      return query('DELETE FROM users WHERE id = ?', [id]).then(() => {
+        res.json({
+          status: 'success',
+          message: 'User deleted successfully'
+        });
       });
-    }
-
-    // Delete user
-    await pool.execute('DELETE FROM users WHERE id = ?', [id]);
-
-    res.json({
-      status: 'success',
-      message: 'User deleted successfully'
     });
-
-  } catch (error) {
+  }).catch(error => {
     console.error('Delete user error:', error);
     res.status(500).json({
       status: 'error',
       message: 'Internal server error'
     });
-  }
+  });
 });
 
 // @route   GET /api/users/:id/stats
 // @desc    Get user statistics
 // @access  Private (Admin only)
-router.get('/:id/stats', [authenticateToken, requireAdmin], async (req, res) => {
-  try {
-    const { id } = req.params;
+router.get('/:id/stats', authenticateToken, requireAdmin, (req, res) => {
+  const { id } = req.params;
 
-    // Check if user exists
-    const [users] = await pool.execute(
-      'SELECT id FROM users WHERE id = ?',
-      [id]
-    );
-
+  // Check if user exists
+  query(
+    'SELECT id, name FROM users WHERE id = ?',
+    [id]
+  ).then(users => {
     if (users.length === 0) {
       return res.status(404).json({
         status: 'error',
@@ -482,44 +483,52 @@ router.get('/:id/stats', [authenticateToken, requireAdmin], async (req, res) => 
       });
     }
 
-    // Get staff profile statistics
-    const [staffStats] = await pool.execute(
-      `SELECT 
-        COUNT(*) as has_staff_profile,
-        SUM(CASE WHEN s.center_id IS NOT NULL THEN 1 ELSE 0 END) as has_center_assignment
-       FROM staff s
-       WHERE s.user_id = ?`,
-      [id]
-    );
+    const userName = users[0].name;
 
-    // Get project membership statistics
-    const [projectStats] = await pool.execute(
+    // Get staff statistics
+    return query(
       `SELECT 
+        COUNT(*) as total_staff,
+        SUM(CASE WHEN gender = 'male' THEN 1 ELSE 0 END) as male_count,
+        SUM(CASE WHEN gender = 'female' THEN 1 ELSE 0 END) as female_count,
+        SUM(CASE WHEN gender = 'other' THEN 1 ELSE 0 END) as other_count
+       FROM staff
+       WHERE name = ?`,
+      [userName]
+    ).then(staffStats => {
+      // Get project statistics
+      return query(
+        `SELECT 
         COUNT(*) as total_projects,
-        SUM(CASE WHEN pm.end_time IS NULL THEN 1 ELSE 0 END) as active_projects,
-        SUM(CASE WHEN pm.end_time IS NOT NULL THEN 1 ELSE 0 END) as completed_projects
-       FROM project_members pm
-       LEFT JOIN staff s ON pm.staff_id = s.id
-       WHERE s.user_id = ?`,
-      [id]
-    );
-
-    res.json({
-      status: 'success',
-      data: {
-        userId: parseInt(id),
-        staff: staffStats[0],
-        projects: projectStats[0]
-      }
+        SUM(CASE WHEN project_status = 'planning' THEN 1 ELSE 0 END) as planning_count,
+        SUM(CASE WHEN project_status = 'in_progress' THEN 1 ELSE 0 END) as in_progress_count,
+        SUM(CASE WHEN project_status = 'completed' THEN 1 ELSE 0 END) as completed_count,
+        SUM(CASE WHEN project_status = 'on_hold' THEN 1 ELSE 0 END) as on_hold_count,
+        SUM(CASE WHEN project_status = 'cancelled' THEN 1 ELSE 0 END) as cancelled_count
+       FROM projects p
+       INNER JOIN project_members pm ON p.id = pm.project_id
+       INNER JOIN staff s ON pm.staff_id = s.id
+       WHERE s.name = ?`,
+        [userName]
+      ).then(projectStats => {
+        res.json({
+          status: 'success',
+          data: {
+            userId: parseInt(id),
+            userName,
+            staff: staffStats[0],
+            projects: projectStats[0]
+          }
+        });
+      });
     });
-
-  } catch (error) {
+  }).catch(error => {
     console.error('Get user stats error:', error);
     res.status(500).json({
       status: 'error',
       message: 'Internal server error'
     });
-  }
+  });
 });
 
 module.exports = router; 

@@ -30,7 +30,7 @@ const staffValidation = [
 // @route   GET /api/staff
 // @desc    Get all staff with optional filtering and pagination
 // @access  Private
-router.get('/', authenticateToken, (req, res) => {
+router.get('/', authenticateToken, async (req, res) => {
   const { 
     page = 1, 
     limit = 10, 
@@ -41,17 +41,14 @@ router.get('/', authenticateToken, (req, res) => {
     sortOrder = 'DESC'
   } = req.query;
 
-  const offset = (page - 1) * limit;
+  const safePage = Math.max(parseInt(page) || 1, 1);
+  const safeLimit = Math.min(Math.max(parseInt(limit) || 10, 1), 1000);
+  const offset = (safePage - 1) * safeLimit;
   const validSortFields = ['id', 'name', 'birth_date', 'gender', 'center_id', 'created_at', 'updated_at'];
   const validSortOrders = ['ASC', 'DESC'];
 
-  // Validate sort parameters
-  if (!validSortFields.includes(sortBy)) {
-    sortBy = 'created_at';
-  }
-  if (!validSortOrders.includes(sortOrder.toUpperCase())) {
-    sortOrder = 'DESC';
-  }
+  const sortField = validSortFields.includes(sortBy) ? sortBy : 'created_at';
+  const sortDirection = validSortOrders.includes(String(sortOrder).toUpperCase()) ? String(sortOrder).toUpperCase() : 'DESC';
 
   // Build WHERE clause
   let whereClause = 'WHERE 1=1';
@@ -73,15 +70,14 @@ router.get('/', authenticateToken, (req, res) => {
     params.push(gender);
   }
 
-  // Get total count
-  query(
-    `SELECT COUNT(*) as total FROM staff s ${whereClause}`,
-    params
-  ).then(countResult => {
+  try {
+    const countResult = await query(
+      `SELECT COUNT(*) as total FROM staff s ${whereClause}`,
+      params
+    );
     const total = countResult[0].total;
 
-    // Get staff with center information
-    return query(
+    const staff = await query(
       `SELECT 
         s.id,
         s.name,
@@ -99,45 +95,39 @@ router.get('/', authenticateToken, (req, res) => {
        FROM staff s
        LEFT JOIN centers c ON s.center_id = c.id
        ${whereClause}
-       ORDER BY s.${sortBy} ${sortOrder}
+       ORDER BY s.${sortField} ${sortDirection}
        LIMIT ? OFFSET ?`,
-      [...params, parseInt(limit), offset]
-    ).then(staff => {
-      // Get unique centers for filter options
-      return query(
-        'SELECT id, name FROM centers ORDER BY name'
-      ).then(centers => {
-        const totalPages = Math.ceil(total / limit);
-        const hasNextPage = page < totalPages;
-        const hasPrevPage = page > 1;
+      [...params, safeLimit, offset]
+    );
 
-        res.json({
-          status: 'success',
-          data: {
-            staff,
-            pagination: {
-              currentPage: parseInt(page),
-              totalPages,
-              totalItems: total,
-              itemsPerPage: parseInt(limit),
-              hasNextPage,
-              hasPrevPage
-            },
-            filters: {
-              centers: centers.map(c => ({ id: c.id, name: c.name })),
-              genders: ['male', 'female', 'other']
-            }
-          }
-        });
-      });
+    const centers = await query('SELECT id, name FROM centers ORDER BY name');
+
+    return res.json({
+      status: 'success',
+      message: 'Fetched staff successfully',
+      data: {
+        staff,
+        pagination: {
+          currentPage: safePage,
+          totalPages: Math.ceil(total / safeLimit),
+          totalItems: total,
+          itemsPerPage: safeLimit,
+          hasNextPage: safePage < Math.ceil(total / safeLimit),
+          hasPrevPage: safePage > 1
+        },
+        filters: {
+          centers: centers.map(c => ({ id: c.id, name: c.name })),
+          genders: ['male', 'female', 'other']
+        }
+      }
     });
-  }).catch(error => {
+  } catch (error) {
     console.error('Error fetching staff:', error);
-    res.status(500).json({
+    return res.status(500).json({
       status: 'error',
       message: 'Failed to fetch staff'
     });
-  });
+  }
 });
 
 // @route   GET /api/staff/:id

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import ProjectCard from '../components/ProjectCard';
 import ProjectForm from '../components/ProjectForm';
 import projectService from '../services/projectService';
@@ -23,21 +23,20 @@ const ProjectsPage = () => {
     itemsPerPage: 10
   });
 
+  // Load centers once
   useEffect(() => {
+    const loadCenters = async () => {
+      try {
+        const centersData = await centerService.getCentersForSelect();
+        setCenters(centersData);
+      } catch (error) {
+        console.error('Failed to load centers:', error);
+      }
+    };
     loadCenters();
-    loadProjects();
-  }, [pagination.currentPage, searchTerm, filterCenter, filterStatus, sortBy, sortOrder]);
+  }, []);
 
-  const loadCenters = async () => {
-    try {
-      const centersData = await centerService.getCentersForSelect();
-      setCenters(centersData);
-    } catch (error) {
-      console.error('Failed to load centers:', error);
-    }
-  };
-
-  const loadProjects = async () => {
+  const loadProjects = useCallback(async () => {
     try {
       setLoading(true);
       setError('');
@@ -65,7 +64,12 @@ const ProjectsPage = () => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [pagination.currentPage, pagination.itemsPerPage, searchTerm, filterCenter, filterStatus, sortBy, sortOrder]);
+
+  // Load projects whenever filters/pagination change
+  useEffect(() => {
+    loadProjects();
+  }, [loadProjects]);
 
   const handleCreateProject = async (projectData) => {
     try {

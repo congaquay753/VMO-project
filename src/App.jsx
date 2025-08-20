@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { Routes, Route, Navigate, useLocation, useNavigate } from 'react-router-dom';
 import Header from './components/Header';
 import Sidebar from './components/Sidebar';
 import Footer from './components/Footer';
@@ -13,11 +14,11 @@ import './App.css';
 function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [user, setUser] = useState(null);
-  const [activeTab, setActiveTab] = useState('dashboard');
   const [loading, setLoading] = useState(true);
+  const navigate = useNavigate();
+  const location = useLocation();
 
   useEffect(() => {
-    // Check if user is already authenticated
     const checkAuth = async () => {
       try {
         if (authService.isAuthenticated()) {
@@ -41,18 +42,14 @@ function App() {
   const handleLogin = (loginResult) => {
     setUser(loginResult.user);
     setIsAuthenticated(true);
-    setActiveTab('dashboard');
+    navigate('/');
   };
 
   const handleLogout = () => {
     authService.clearAuth();
     setUser(null);
     setIsAuthenticated(false);
-    setActiveTab('dashboard');
-  };
-
-  const handleTabChange = (tab) => {
-    setActiveTab(tab);
+    navigate('/login');
   };
 
   if (loading) {
@@ -64,32 +61,27 @@ function App() {
     );
   }
 
+  if (!isAuthenticated && location.pathname !== '/login') {
+    return <Navigate to="/login" replace />;
+  }
+
   if (!isAuthenticated) {
     return <Login onLogin={handleLogin} />;
   }
-
-  const renderContent = () => {
-    switch (activeTab) {
-      case 'dashboard':
-        return <Dashboard />;
-      case 'centers':
-        return <CentersPage />;
-      case 'projects':
-        return <ProjectsPage />;
-      case 'freshers':
-        return <FreshersPage />;
-      default:
-        return <Dashboard />;
-    }
-  };
 
   return (
     <div className="app">
       <Header user={user} onLogout={handleLogout} />
       <div className="main-content">
-        <Sidebar activeTab={activeTab} onTabChange={handleTabChange} />
+        <Sidebar />
         <main className="content">
-          {renderContent()}
+          <Routes>
+            <Route path="/" element={<Dashboard />} />
+            <Route path="/centers" element={<CentersPage />} />
+            <Route path="/projects" element={<ProjectsPage />} />
+            <Route path="/freshers" element={<FreshersPage />} />
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
         </main>
       </div>
       <Footer />

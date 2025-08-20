@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import CenterCard from '../components/CenterCard';
 import CenterForm from '../components/CenterForm';
 import centerService from '../services/centerService';
@@ -20,11 +20,7 @@ const CentersPage = () => {
     itemsPerPage: 10
   });
 
-  useEffect(() => {
-    loadCenters();
-  }, [pagination.currentPage, searchTerm, filterField, sortBy, sortOrder]);
-
-  const loadCenters = async () => {
+  const loadCenters = useCallback(async () => {
     try {
       setLoading(true);
       setError('');
@@ -51,7 +47,11 @@ const CentersPage = () => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [pagination.currentPage, pagination.itemsPerPage, searchTerm, filterField, sortBy, sortOrder]);
+
+  useEffect(() => {
+    loadCenters();
+  }, [loadCenters]);
 
   const handleCreateCenter = async (centerData) => {
     try {

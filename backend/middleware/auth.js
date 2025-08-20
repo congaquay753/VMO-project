@@ -14,71 +14,43 @@ const authenticateToken = (req, res, next) => {
   }
 
   // Verify token
-  jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key', (jwtError, decoded) => {
+  jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key', async (jwtError, decoded) => {
     if (jwtError) {
       if (jwtError.name === 'JsonWebTokenError') {
-        return res.status(401).json({
-          status: 'error',
-          message: 'Invalid token'
-        });
+        return res.status(401).json({ status: 'error', message: 'Invalid token' });
       } else if (jwtError.name === 'TokenExpiredError') {
-        return res.status(401).json({
-          status: 'error',
-          message: 'Token expired'
-        });
+        return res.status(401).json({ status: 'error', message: 'Token expired' });
       } else {
         console.error('JWT verification error:', jwtError);
-        return res.status(401).json({
-          status: 'error',
-          message: 'Token verification failed'
-        });
+        return res.status(401).json({ status: 'error', message: 'Token verification failed' });
       }
     }
 
-    // Get user information from database
-    query(
-      'SELECT id, name, status, role_id FROM users WHERE id = ?',
-      [decoded.userId]
-    ).then(users => {
+    try {
+      const users = await query('SELECT id, name, status, role_id FROM users WHERE id = ?', [decoded.userId]);
       if (users.length === 0) {
-        return res.status(401).json({
-          status: 'error',
-          message: 'User not found'
-        });
+        return res.status(401).json({ status: 'error', message: 'User not found' });
       }
 
       const user = users[0];
 
-      // Check if user is active
       if (user.status !== 'active') {
-        return res.status(401).json({
-          status: 'error',
-          message: 'User account is not active'
-        });
+        return res.status(401).json({ status: 'error', message: 'User account is not active' });
       }
 
-      // Get role information
-      return query(
-        'SELECT name FROM roles WHERE id = ?',
-        [user.role_id]
-      ).then(roles => {
-        // Add user info to request object
-        req.user = {
-          id: user.id,
-          name: user.name,
-          status: user.status,
-          role: roles.length > 0 ? roles[0].name : null
-        };
+      const roles = await query('SELECT name FROM roles WHERE id = ?', [user.role_id]);
+      req.user = {
+        id: user.id,
+        name: user.name,
+        status: user.status,
+        role: roles.length > 0 ? roles[0].name : null
+      };
 
-        next();
-      });
-    }).catch(error => {
+      return next();
+    } catch (error) {
       console.error('Auth middleware error:', error);
-      return res.status(500).json({
-        status: 'error',
-        message: 'Authentication failed'
-      });
-    });
+      return res.status(500).json({ status: 'error', message: 'Authentication failed' });
+    }
   });
 };
 

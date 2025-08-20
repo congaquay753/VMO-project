@@ -24,7 +24,7 @@ const centerValidation = [
 // @route   GET /api/centers
 // @desc    Get all centers with optional filtering and pagination
 // @access  Private
-router.get('/', authenticateToken, (req, res) => {
+router.get('/', authenticateToken, async (req, res) => {
   const { 
     page = 1, 
     limit = 10, 
@@ -34,17 +34,14 @@ router.get('/', authenticateToken, (req, res) => {
     sortOrder = 'DESC'
   } = req.query;
 
-  const offset = (page - 1) * limit;
+  const safePage = Math.max(parseInt(page) || 1, 1);
+  const safeLimit = Math.min(Math.max(parseInt(limit) || 10, 1), 1000);
+  const offset = (safePage - 1) * safeLimit;
   const validSortFields = ['id', 'name', 'field', 'address', 'created_at', 'updated_at'];
   const validSortOrders = ['ASC', 'DESC'];
 
-  // Validate sort parameters
-  if (!validSortFields.includes(sortBy)) {
-    sortBy = 'created_at';
-  }
-  if (!validSortOrders.includes(sortOrder.toUpperCase())) {
-    sortOrder = 'DESC';
-  }
+  const sortField = validSortFields.includes(sortBy) ? sortBy : 'created_at';
+  const sortDirection = validSortOrders.includes(String(sortOrder).toUpperCase()) ? String(sortOrder).toUpperCase() : 'DESC';
 
   // Build WHERE clause
   let whereClause = 'WHERE 1=1';
@@ -61,15 +58,14 @@ router.get('/', authenticateToken, (req, res) => {
     params.push(field);
   }
 
-  // Get total count
-  query(
-    `SELECT COUNT(*) as total FROM centers c ${whereClause}`,
-    params
-  ).then(countResult => {
+  try {
+    const countResult = await query(
+      `SELECT COUNT(*) as total FROM centers c ${whereClause}`,
+      params
+    );
     const total = countResult[0].total;
 
-    // Get centers with staff and project counts
-    return query(
+    const centersData = await query(
       `SELECT 
         c.id,
         c.name,
@@ -84,44 +80,36 @@ router.get('/', authenticateToken, (req, res) => {
        LEFT JOIN projects p ON c.id = p.center_id
        ${whereClause}
        GROUP BY c.id
-       ORDER BY c.${sortBy} ${sortOrder}
+       ORDER BY c.${sortField} ${sortDirection}
        LIMIT ? OFFSET ?`,
-      [...params, parseInt(limit), offset]
-    ).then(centers => {
-      // Get unique fields for filter options
-      return query(
-        'SELECT DISTINCT field FROM centers ORDER BY field'
-      ).then(fields => {
-        const totalPages = Math.ceil(total / limit);
-        const hasNextPage = page < totalPages;
-        const hasPrevPage = page > 1;
+      [...params, safeLimit, offset]
+    );
 
-        res.json({
-          status: 'success',
-          data: {
-            centers,
-            pagination: {
-              currentPage: parseInt(page),
-              totalPages,
-              totalItems: total,
-              itemsPerPage: parseInt(limit),
-              hasNextPage,
-              hasPrevPage
-            },
-            filters: {
-              fields: fields.map(f => f.field)
-            }
-          }
-        });
-      });
+    return res.json({
+      status: 'success',
+      message: 'Fetched centers successfully',
+      data: {
+        centers: centersData,
+        pagination: {
+          currentPage: safePage,
+          totalPages: Math.ceil(total / safeLimit),
+          totalItems: total,
+          itemsPerPage: safeLimit,
+          hasNextPage: safePage < Math.ceil(total / safeLimit),
+          hasPrevPage: safePage > 1
+        },
+        filters: {
+          fields: (await query('SELECT DISTINCT field FROM centers ORDER BY field')).map(f => f.field)
+        }
+      }
     });
-  }).catch(error => {
+  } catch (error) {
     console.error('Error fetching centers:', error);
-    res.status(500).json({
+    return res.status(500).json({
       status: 'error',
       message: 'Failed to fetch centers'
     });
-  });
+  }
 });
 
 // @route   GET /api/centers/:id

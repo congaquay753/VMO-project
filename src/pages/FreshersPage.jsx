@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import FresherCard from '../components/FresherCard';
 import FresherForm from '../components/FresherForm';
 import staffService from '../services/staffService';
@@ -23,21 +23,20 @@ const FreshersPage = () => {
     itemsPerPage: 10
   });
 
+  // Load centers once
   useEffect(() => {
+    const loadCenters = async () => {
+      try {
+        const centersData = await centerService.getCentersForSelect();
+        setCenters(centersData);
+      } catch (error) {
+        console.error('Failed to load centers:', error);
+      }
+    };
     loadCenters();
-    loadStaff();
-  }, [pagination.currentPage, searchTerm, filterCenter, filterGender, sortBy, sortOrder]);
+  }, []);
 
-  const loadCenters = async () => {
-    try {
-      const centersData = await centerService.getCentersForSelect();
-      setCenters(centersData);
-    } catch (error) {
-      console.error('Failed to load centers:', error);
-    }
-  };
-
-  const loadStaff = async () => {
+  const loadStaff = useCallback(async () => {
     try {
       setLoading(true);
       setError('');
@@ -65,7 +64,12 @@ const FreshersPage = () => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [pagination.currentPage, pagination.itemsPerPage, searchTerm, filterCenter, filterGender, sortBy, sortOrder]);
+
+  // Load staff whenever filters/pagination change
+  useEffect(() => {
+    loadStaff();
+  }, [loadStaff]);
 
   const handleCreateStaff = async (staffData) => {
     try {

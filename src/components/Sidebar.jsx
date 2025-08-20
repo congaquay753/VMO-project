@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
+import { NavLink } from 'react-router-dom';
 import centerService from '../services/centerService';
 import projectService from '../services/projectService';
 import staffService from '../services/staffService';
 
-const Sidebar = ({ activeTab, onTabChange }) => {
+const Sidebar = () => {
   const [stats, setStats] = useState({
     centers: 0,
     projects: 0,
@@ -18,8 +19,6 @@ const Sidebar = ({ activeTab, onTabChange }) => {
   const loadStats = async () => {
     try {
       setLoading(true);
-      
-      // Load stats in parallel
       const [centersResponse, projectsResponse, staffResponse] = await Promise.all([
         centerService.getCenters({ limit: 1 }),
         projectService.getProjects({ limit: 1 }),
@@ -39,30 +38,10 @@ const Sidebar = ({ activeTab, onTabChange }) => {
   };
 
   const menuItems = [
-    {
-      id: 'dashboard',
-      label: 'Dashboard',
-      icon: '📊',
-      description: 'Tổng quan hệ thống'
-    },
-    {
-      id: 'centers',
-      label: 'Trung tâm',
-      icon: '🏢',
-      description: `Quản lý trung tâm (${loading ? '...' : stats.centers})`
-    },
-    {
-      id: 'projects',
-      label: 'Dự án',
-      icon: '📋',
-      description: `Quản lý dự án (${loading ? '...' : stats.projects})`
-    },
-    {
-      id: 'freshers',
-      label: 'Nhân viên',
-      icon: '👥',
-      description: `Quản lý nhân viên (${loading ? '...' : stats.staff})`
-    }
+    { id: 'dashboard', path: '/', label: 'Dashboard', icon: '📊', description: 'Tổng quan hệ thống' },
+    { id: 'centers', path: '/centers', label: 'Trung tâm', icon: '🏢', description: `Quản lý trung tâm (${loading ? '...' : stats.centers})` },
+    { id: 'projects', path: '/projects', label: 'Dự án', icon: '📋', description: `Quản lý dự án (${loading ? '...' : stats.projects})` },
+    { id: 'freshers', path: '/freshers', label: 'Nhân viên', icon: '👥', description: `Quản lý nhân viên (${loading ? '...' : stats.staff})` }
   ];
 
   return (
@@ -78,19 +57,18 @@ const Sidebar = ({ activeTab, onTabChange }) => {
         <ul className="nav-menu">
           {menuItems.map(item => (
             <li key={item.id} className="nav-item">
-              <button
-                className={`nav-link ${activeTab === item.id ? 'active' : ''}`}
-                onClick={() => onTabChange(item.id)}
+              <NavLink
+                to={item.path}
+                className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}
                 title={item.description}
+                end={item.path === '/'}
               >
                 <span className="nav-icon">{item.icon}</span>
                 <span className="nav-label">{item.label}</span>
                 {item.id !== 'dashboard' && (
-                  <span className="nav-count">
-                    {loading ? '...' : stats[item.id]}
-                  </span>
+                  <span className="nav-count">{loading ? '...' : stats[item.id]}</span>
                 )}
-              </button>
+              </NavLink>
             </li>
           ))}
         </ul>

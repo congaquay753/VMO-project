@@ -27,7 +27,7 @@ const projectValidation = [
 // @route   GET /api/projects
 // @desc    Get all projects with optional filtering and pagination
 // @access  Private
-router.get('/', authenticateToken, (req, res) => {
+router.get('/', authenticateToken, async (req, res) => {
   const { 
     page = 1, 
     limit = 10, 
@@ -38,17 +38,14 @@ router.get('/', authenticateToken, (req, res) => {
     sortOrder = 'DESC'
   } = req.query;
 
-  const offset = (page - 1) * limit;
+  const safePage = Math.max(parseInt(page) || 1, 1);
+  const safeLimit = Math.min(Math.max(parseInt(limit) || 10, 1), 1000);
+  const offset = (safePage - 1) * safeLimit;
   const validSortFields = ['id', 'name', 'center_id', 'project_status', 'created_at', 'updated_at'];
   const validSortOrders = ['ASC', 'DESC'];
 
-  // Validate sort parameters
-  if (!validSortFields.includes(sortBy)) {
-    sortBy = 'created_at';
-  }
-  if (!validSortOrders.includes(sortOrder.toUpperCase())) {
-    sortOrder = 'DESC';
-  }
+  const sortField = validSortFields.includes(sortBy) ? sortBy : 'created_at';
+  const sortDirection = validSortOrders.includes(String(sortOrder).toUpperCase()) ? String(sortOrder).toUpperCase() : 'DESC';
 
   // Build WHERE clause
   let whereClause = 'WHERE 1=1';
@@ -70,15 +67,14 @@ router.get('/', authenticateToken, (req, res) => {
     params.push(project_status);
   }
 
-  // Get total count
-  query(
-    `SELECT COUNT(*) as total FROM projects p ${whereClause}`,
-    params
-  ).then(countResult => {
+  try {
+    const countResult = await query(
+      `SELECT COUNT(*) as total FROM projects p ${whereClause}`,
+      params
+    );
     const total = countResult[0].total;
 
-    // Get projects with center information
-    return query(
+    const projects = await query(
       `SELECT 
         p.id,
         p.name,
@@ -95,45 +91,39 @@ router.get('/', authenticateToken, (req, res) => {
        LEFT JOIN project_members pm ON p.id = pm.project_id
        ${whereClause}
        GROUP BY p.id
-       ORDER BY p.${sortBy} ${sortOrder}
+       ORDER BY p.${sortField} ${sortDirection}
        LIMIT ? OFFSET ?`,
-      [...params, parseInt(limit), offset]
-    ).then(projects => {
-      // Get unique centers for filter options
-      return query(
-        'SELECT id, name FROM centers ORDER BY name'
-      ).then(centers => {
-        const totalPages = Math.ceil(total / limit);
-        const hasNextPage = page < totalPages;
-        const hasPrevPage = page > 1;
+      [...params, safeLimit, offset]
+    );
 
-        res.json({
-          status: 'success',
-          data: {
-            projects,
-            pagination: {
-              currentPage: parseInt(page),
-              totalPages,
-              totalItems: total,
-              itemsPerPage: parseInt(limit),
-              hasNextPage,
-              hasPrevPage
-            },
-            filters: {
-              centers: centers.map(c => ({ id: c.id, name: c.name })),
-              statuses: ['planning', 'in_progress', 'completed', 'on_hold', 'cancelled']
-            }
-          }
-        });
-      });
+    const centers = await query('SELECT id, name FROM centers ORDER BY name');
+
+    return res.json({
+      status: 'success',
+      message: 'Fetched projects successfully',
+      data: {
+        projects,
+        pagination: {
+          currentPage: safePage,
+          totalPages: Math.ceil(total / safeLimit),
+          totalItems: total,
+          itemsPerPage: safeLimit,
+          hasNextPage: safePage < Math.ceil(total / safeLimit),
+          hasPrevPage: safePage > 1
+        },
+        filters: {
+          centers: centers.map(c => ({ id: c.id, name: c.name })),
+          statuses: ['planning', 'in_progress', 'completed', 'on_hold', 'cancelled']
+        }
+      }
     });
-  }).catch(error => {
+  } catch (error) {
     console.error('Error fetching projects:', error);
-    res.status(500).json({
+    return res.status(500).json({
       status: 'error',
       message: 'Failed to fetch projects'
     });
-  });
+  }
 });
 
 // @route   GET /api/projects/:id
