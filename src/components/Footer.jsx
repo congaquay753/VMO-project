@@ -37,7 +37,7 @@ const Footer = () => {
       <div className="footer-bottom">
         <div className="footer-copyright">
           <p>© 2025 MS System - Hệ thống quản lý trung tâm, dự án và nhân viên</p>
-          <p>Phát triển bởi MS Team | Phiên bản 1.0.0</p>
+          <p> Phiên bản 1.0.0</p>
         </div>
         <div className="footer-status">
           <span className="status-indicator">🟢</span>
